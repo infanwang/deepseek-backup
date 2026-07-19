@@ -341,7 +341,7 @@ def do_backup(full=False):
     print(f"{'='*50}")
 
     # 导出
-    print("\n导出 Markdown + Word...")
+    print("\n导出...")
     sys.path.insert(0, str(Path(__file__).parent))
     from export import export_all
     export_all()
@@ -352,6 +352,12 @@ def main():
     parser = argparse.ArgumentParser(description="DeepSeek 备份")
     parser.add_argument("--full", "-f", action="store_true", help="全量备份")
     parser.add_argument("--login", action="store_true", help="登录")
+    parser.add_argument("--format", nargs="+",
+                        choices=["markdown", "md", "word", "docx", "pdf", "json", "all"],
+                        default=["all"], help="导出格式")
+    parser.add_argument("--from-date", help="导出起始日期 YYYY-MM-DD")
+    parser.add_argument("--to-date", help="导出截止日期 YYYY-MM-DD")
+    parser.add_argument("--keyword", "-k", help="按标题关键词筛选")
     args = parser.parse_args()
 
     if args.login:

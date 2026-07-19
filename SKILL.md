@@ -1,37 +1,34 @@
 ---
 name: deepseek-backup
-description: Automatic backup tool for DeepSeek chat history. Supports full and incremental backup, exports to Markdown and Word formats. Use when user mentions "backup DeepSeek", "export DeepSeek chats", "save DeepSeek conversations", "DeepSeek chat history", or "备份DeepSeek聊天记录".
+description: Automatic backup tool for DeepSeek chat history. Supports full/incremental backup, date filtering, keyword search, exports to Markdown, Word, PDF, JSON formats. Use when user mentions "backup DeepSeek", "export DeepSeek chats", "save DeepSeek conversations", "DeepSeek chat history", or "备份DeepSeek聊天记录".
 license: MIT
 compatibility: Requires Python 3.10+, Selenium, Chromium browser
 metadata:
   author: cloudpeak
-  version: 1.0.0
+  version: 1.1.0
   category: productivity
-  tags: [deepseek, backup, chat-history, selenium, automation]
+  tags: [deepseek, backup, chat-history, selenium, automation, export]
 ---
 
 # DeepSeek Chat Backup
 
-Automatically backup DeepSeek chat conversations with full/incremental modes, exporting to Markdown and Word formats.
+Backup DeepSeek chat conversations with date filtering, keyword search, and multi-format export (Markdown, Word, PDF, JSON).
 
 ## Prerequisites
 
 ```bash
-pip install selenium python-docx markdown pyyaml
-# Chromium browser required (snap or apt)
+pip install selenium python-docx markdown pyyaml fpdf2
 ```
 
 ## Quick Start
 
 ### First-time Login
 
-Opens browser for manual login, saves session for future use:
-
 ```bash
 python scripts/backup.py --login
 ```
 
-### Full Backup
+### Full Backup + Export All Formats
 
 ```bash
 python scripts/backup.py --full
@@ -43,13 +40,75 @@ python scripts/backup.py --full
 python scripts/backup.py
 ```
 
-### Export Only
+## Export Commands
+
+### List All Conversations
 
 ```bash
-python scripts/export.py
+python scripts/export.py --list
 ```
 
-### Scheduled Backup (cron)
+### Export by Date Range
+
+```bash
+# Export conversations from July 2026
+python scripts/export.py --from-date 2026-07-01 --to-date 2026-07-31
+
+# Export only recent week
+python scripts/export.py --from-date 2026-07-12
+```
+
+### Export by Keyword
+
+```bash
+python scripts/export.py --keyword "5G"
+python scripts/export.py -k "架构"
+```
+
+### Export Specific Conversations
+
+```bash
+# By chat ID
+python scripts/export.py --chat-id abc123 def456
+
+# List IDs first
+python scripts/export.py --list
+```
+
+### Choose Export Format
+
+```bash
+# Single format
+python scripts/export.py --format pdf
+python scripts/export.py -f markdown
+
+# Multiple formats
+python scripts/export.py -f markdown word pdf
+
+# All formats (default)
+python scripts/export.py -f all
+```
+
+### Combined Filters
+
+```bash
+# PDF export of 5G-related chats from July
+python scripts/export.py -f pdf --keyword "5G" --from-date 2026-07-01 --to-date 2026-07-31
+
+# JSON export of specific conversations
+python scripts/export.py -f json --chat-id abc123 def456
+```
+
+## Export Formats
+
+| Format | Extension | Features |
+|--------|-----------|----------|
+| `markdown` / `md` | `.md` | Emojis, headers, clean text |
+| `word` / `docx` | `.docx` | Formatted headings, colored roles |
+| `pdf` | `.pdf` | Page numbers, color-coded roles |
+| `json` | `.json` | Machine-readable, full metadata |
+
+## Scheduled Backup
 
 ```bash
 python scripts/scheduler.py install-cron    # Daily at 2:00 AM
@@ -59,7 +118,7 @@ python scripts/scheduler.py status          # Check status
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml` and customize:
+Copy `config.example.yaml` to `config.yaml`:
 
 ```yaml
 backup_dir: ~/deepseek-backups
@@ -67,43 +126,47 @@ deepseek_url: https://chat.deepseek.com
 export_formats:
   - markdown
   - word
+  - pdf
+  - json
+```
+
+## CLI Reference
+
+```
+backup.py:
+  --full, -f          Full backup (re-scrape all)
+  --login             Login and save session
+  --format            Export formats: markdown word pdf json all
+  --from-date         Start date YYYY-MM-DD
+  --to-date           End date YYYY-MM-DD
+  --keyword, -k       Filter by title keyword
+
+export.py:
+  --list, -l          List all conversations
+  --format, -f        Export formats (multiple allowed)
+  --from-date         Start date YYYY-MM-DD
+  --to-date           End date YYYY-MM-DD
+  --keyword, -k       Filter by title keyword
+  --chat-id           Specific chat IDs (multiple allowed)
 ```
 
 ## Output Structure
 
 ```
 ~/deepseek-backups/
-├── cookies.json              # Login session (keep private!)
+├── cookies.json              # Login session (private!)
 ├── json/                     # Raw chat data
-│   └── chat_id_title.json
 ├── exports/                  # Generated files
 │   ├── deepseek_backup_xxx.md
-│   └── deepseek_backup_xxx.docx
+│   ├── deepseek_backup_xxx.docx
+│   ├── deepseek_backup_xxx.pdf
+│   └── deepseek_backup_xxx.json
 ├── .browser_data/            # Browser profile
-├── .backup_state.json        # Backup state
-└── backup.log                # Cron log
+└── .backup_state.json        # Backup state
 ```
-
-## How It Works
-
-1. **Login**: Opens Chromium, user logs in manually, session saved to `cookies.json` and `.browser_data/`
-2. **Scrape**: Selenium navigates chat list, extracts messages via JavaScript
-3. **Dedup**: Compares chat IDs against existing JSON files, skips unchanged
-4. **Export**: Generates Markdown (with emojis) and Word (with formatting) files
-5. **Schedule**: Cron runs daily, uses saved session for headless operation
-
-## Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| Cookie expired | Run `python scripts/backup.py --login` again |
-| No chats found | Check if logged in, DeepSeek UI may have changed |
-| Cron not running | Ensure WSL/Windows is on; cron only runs when system is active |
-| Export empty | Run backup first, check `json/` directory |
 
 ## Security Notes
 
 - `cookies.json` contains login credentials - never share
-- `.browser_data/` contains browser session - keep private
 - All data stored locally, no external transmission
 - Set permissions: `chmod 700 ~/deepseek-backups`

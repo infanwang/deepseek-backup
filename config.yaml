@@ -1,0 +1,21 @@
+# DeepSeek Chat Backup Configuration
+
+# Backup storage directory
+backup_dir: ~/deepseek-backups
+
+# DeepSeek URL
+deepseek_url: https://chat.deepseek.com
+
+# Export formats
+export_formats:
+  - markdown
+  - word
+
+# Word document settings
+word:
+  font_name: "Arial"
+  font_size: 11
+
+# Markdown settings
+markdown:
+  include_timestamps: true
