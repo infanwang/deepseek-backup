@@ -1,18 +1,18 @@
 ---
 name: deepseek-backup
-description: Automatic backup tool for DeepSeek chat history. Supports full/incremental backup, date filtering, keyword search, exports to Markdown, Word, PDF, JSON formats. Use when user mentions "backup DeepSeek", "export DeepSeek chats", "save DeepSeek conversations", "DeepSeek chat history", or "备份DeepSeek聊天记录".
+description: Automatic backup tool for DeepSeek chat history. Supports full/incremental backup, date filtering, keyword search, exports to Markdown, Word, PDF, JSON, HTML formats with ZIP archive. Use when user mentions "backup DeepSeek", "export DeepSeek chats", "save DeepSeek conversations", "DeepSeek chat history", or "备份DeepSeek聊天记录".
 license: MIT
 compatibility: Requires Python 3.10+, Selenium, Chromium browser
 metadata:
   author: cloudpeak
-  version: 1.1.0
+  version: 1.2.0
   category: productivity
-  tags: [deepseek, backup, chat-history, selenium, automation, export]
+  tags: [deepseek, backup, chat-history, selenium, automation, export, viewer]
 ---
 
 # DeepSeek Chat Backup
 
-Backup DeepSeek chat conversations with date filtering, keyword search, and multi-format export (Markdown, Word, PDF, JSON).
+Backup DeepSeek chat conversations with date filtering, keyword search, multi-format export (Markdown, Word, PDF, JSON, HTML Viewer), ZIP archive, and conversation statistics.
 
 ## Prerequisites
 
@@ -107,6 +107,37 @@ python scripts/export.py -f json --chat-id abc123 def456
 | `word` / `docx` | `.docx` | Formatted headings, colored roles |
 | `pdf` | `.pdf` | Page numbers, color-coded roles |
 | `json` | `.json` | Machine-readable, full metadata |
+| `html` | `.html` | Local web viewer with sidebar, search, dark theme |
+
+## Additional Features
+
+### Conversation Statistics
+
+```bash
+python scripts/export.py --stats
+```
+
+Shows total chats, messages, word count (user vs AI).
+
+### ZIP Archive
+
+```bash
+python scripts/export.py -f all --zip
+```
+
+Bundles all exports into a single ZIP file.
+
+### HTML Viewer
+
+```bash
+python scripts/export.py -f html
+```
+
+Generates a local web app (`html_viewer/index.html`) for browsing conversations with:
+- Dark theme sidebar
+- Real-time search
+- Click-to-view conversations
+- Statistics summary
 
 ## Scheduled Backup
 
@@ -136,18 +167,20 @@ export_formats:
 backup.py:
   --full, -f          Full backup (re-scrape all)
   --login             Login and save session
-  --format            Export formats: markdown word pdf json all
+  --format            Export formats: markdown word pdf json html all
   --from-date         Start date YYYY-MM-DD
   --to-date           End date YYYY-MM-DD
   --keyword, -k       Filter by title keyword
 
 export.py:
   --list, -l          List all conversations
+  --stats, -s         Show conversation statistics
   --format, -f        Export formats (multiple allowed)
   --from-date         Start date YYYY-MM-DD
   --to-date           End date YYYY-MM-DD
   --keyword, -k       Filter by title keyword
   --chat-id           Specific chat IDs (multiple allowed)
+  --zip, -z           Create ZIP archive
 ```
 
 ## Output Structure
@@ -160,7 +193,10 @@ export.py:
 │   ├── deepseek_backup_xxx.md
 │   ├── deepseek_backup_xxx.docx
 │   ├── deepseek_backup_xxx.pdf
-│   └── deepseek_backup_xxx.json
+│   ├── deepseek_backup_xxx.json
+│   ├── deepseek_backup_xxx.zip
+│   └── html_viewer/
+│       └── index.html        # Local web viewer
 ├── .browser_data/            # Browser profile
 └── .backup_state.json        # Backup state
 ```
