@@ -10,6 +10,14 @@ deepseek_url: https://chat.deepseek.com
 export_formats:
   - markdown
   - word
+  - json
+  - html
+
+# PII desensitization (phone, email, ID card, bank card, IP, API keys)
+pii_desensitize: false
+
+# Rate limiting (seconds between requests)
+rate_limit_seconds: 2.0
 
 # Word document settings
 word:

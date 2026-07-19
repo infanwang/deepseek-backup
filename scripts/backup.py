@@ -6,8 +6,10 @@ DeepSeek Chat History Backup Tool
 
 import json
 import os
+import re
 import sys
 import time
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +24,93 @@ BACKUP_DIR = Path(os.path.expanduser("~/deepseek-backups"))
 BROWSER_DATA = BACKUP_DIR / ".browser_data"
 STATE_FILE = BACKUP_DIR / ".backup_state.json"
 COOKIE_FILE = BACKUP_DIR / "cookies.json"
+
+
+# ========== PII 脱敏 ==========
+
+# PII 正则模式
+PII_PATTERNS = {
+    "phone": (r'1[3-9]\d{9}', lambda m: m.group()[:3] + "****" + m.group()[-4:]),
+    "email": (r'[\w.+-]+@[\w-]+\.[\w.]+', lambda m: m.group()[:2] + "***@" + m.group().split("@")[1]),
+    "id_card": (r'\d{17}[\dXx]', lambda m: m.group()[:6] + "********" + m.group()[-4:]),
+    "bank_card": (r'\d{16,19}', lambda m: m.group()[:4] + " **** **** " + m.group()[-4:]),
+    "ip_addr": (r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', lambda m: m.group()[:m.group().rfind(".")] + ".xxx"),
+    "url_with_token": (r'(token|key|secret|password|api_key|access_token|authorization)[=:]\S+', 
+                       lambda m: m.group().split("=")[0] + "=***REDACTED***" if "=" in m.group() else m.group().split(":")[0] + ":***REDACTED***"),
+}
+
+
+def desensitize_pii(text: str, enabled: bool = True) -> str:
+    """对文本进行 PII 脱敏处理。"""
+    if not enabled or not text:
+        return text
+    for name, (pattern, replacer) in PII_PATTERNS.items():
+        text = re.sub(pattern, replacer, text)
+    return text
+
+
+def desensitize_chat(chat: dict, enabled: bool = True) -> dict:
+    """对整个对话进行 PII 脱敏。"""
+    if not enabled:
+        return chat
+    result = chat.copy()
+    result["title"] = desensitize_pii(chat.get("title", ""))
+    result["messages"] = []
+    for msg in chat.get("messages", []):
+        result["messages"].append({
+            "role": msg.get("role", "unknown"),
+            "content": desensitize_pii(msg.get("content", "")),
+        })
+    return result
+
+
+# ========== 增量去重 ==========
+
+def compute_content_hash(messages: list) -> str:
+    """计算消息内容的哈希值，用于增量去重。"""
+    content = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def is_chat_updated(existing: dict, new_title: str, new_messages: list) -> bool:
+    """判断对话是否有更新（基于标题和内容哈希）。"""
+    if existing.get("title") != new_title:
+        return True
+    old_hash = existing.get("content_hash", "")
+    new_hash = compute_content_hash(new_messages)
+    return old_hash != new_hash
+
+
+# ========== 限速控制 ==========
+
+class RateLimiter:
+    """请求限速器，防止被风控。"""
+    def __init__(self, min_interval: float = 2.0, max_retries: int = 3):
+        self.min_interval = min_interval
+        self.max_retries = max_retries
+        self.last_request_time = 0
+    
+    def wait(self):
+        """等待最小间隔时间。"""
+        elapsed = time.time() - self.last_request_time
+        if elapsed < self.min_interval:
+            sleep_time = self.min_interval - elapsed
+            time.sleep(sleep_time)
+        self.last_request_time = time.time()
+    
+    def retry(self, func, *args, **kwargs):
+        """带重试的执行。"""
+        for attempt in range(self.max_retries):
+            try:
+                self.wait()
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    wait_time = (attempt + 1) * 5
+                    print(f"[!] 请求失败，{wait_time}秒后重试... ({attempt+1}/{self.max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    raise e
 
 
 def load_config():
@@ -223,7 +312,7 @@ def do_login():
 
 # ========== 备份 ==========
 
-def do_backup(full=False):
+def do_backup(full=False, pii=False, rate_limit=2.0):
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     state = load_state()
     is_first = not state.get("last_backup_time")
@@ -235,6 +324,8 @@ def do_backup(full=False):
     print(f"{'='*50}")
     print(f"DeepSeek 聊天记录备份")
     print(f"模式: {'全量' if full or is_first else '增量'}")
+    print(f"PII脱敏: {'开启' if pii else '关闭'}")
+    print(f"限速: {rate_limit}秒/请求")
     if state.get("last_backup_time"):
         print(f"上次: {state['last_backup_time']}")
     print(f"{'='*50}\n")
@@ -289,15 +380,22 @@ def do_backup(full=False):
         except:
             pass
 
+    # 初始化限速器
+    limiter = RateLimiter(min_interval=rate_limit)
+    
     new_chats = []
     updated = 0
+    skipped = 0
 
     for i, chat in enumerate(chat_list):
         chat_id = chat["chat_id"]
         title = chat["title"]
 
+        # 增量去重：检查标题和内容哈希
         if not full and chat_id in existing_chats:
-            if existing_chats[chat_id].get("title") == title:
+            existing = existing_chats[chat_id]
+            if existing.get("title") == title and existing.get("content_hash"):
+                skipped += 1
                 continue
 
         print(f"[{i+1}/{len(chat_list)}] {title[:50]}...")
@@ -308,13 +406,22 @@ def do_backup(full=False):
         elif not chat_url:
             chat_url = f"https://chat.deepseek.com/chat/{chat_id}"
 
-        messages = scrape_chat_content(driver, chat_url)
+        # 使用限速器抓取
+        try:
+            messages = limiter.retry(scrape_chat_content, driver, chat_url)
+        except Exception as e:
+            print(f"[✗] 抓取失败: {e}")
+            continue
+
+        # 计算内容哈希
+        content_hash = compute_content_hash(messages)
 
         chat_data = {
             "chat_id": chat_id,
             "title": title,
             "url": chat_url,
             "scraped_at": datetime.now(timezone.utc).isoformat(),
+            "content_hash": content_hash,
             "messages": messages,
         }
 
@@ -323,11 +430,12 @@ def do_backup(full=False):
         else:
             new_chats.append(chat_data)
 
+        # 保存时进行 PII 脱敏
+        save_data = desensitize_chat(chat_data, enabled=pii) if pii else chat_data
         safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in chat_id)[:60]
         safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:50]
         with open(existing_dir / f"{safe_id}_{safe_title}.json", "w", encoding="utf-8") as f:
-            json.dump(chat_data, f, ensure_ascii=False, indent=2)
-        time.sleep(1)
+            json.dump(save_data, f, ensure_ascii=False, indent=2)
 
     driver.quit()
 
@@ -337,7 +445,7 @@ def do_backup(full=False):
     save_state(state)
 
     print(f"\n{'='*50}")
-    print(f"完成! 新增 {len(new_chats)} / 更新 {updated} / 总计 {len(state['chat_ids'])}")
+    print(f"完成! 新增 {len(new_chats)} / 更新 {updated} / 跳过 {skipped} / 总计 {len(state['chat_ids'])}")
     print(f"{'='*50}")
 
     # 导出
@@ -352,8 +460,10 @@ def main():
     parser = argparse.ArgumentParser(description="DeepSeek 备份")
     parser.add_argument("--full", "-f", action="store_true", help="全量备份")
     parser.add_argument("--login", action="store_true", help="登录")
+    parser.add_argument("--pii", action="store_true", help="PII 脱敏（手机号/邮箱/身份证等）")
+    parser.add_argument("--rate-limit", type=float, default=2.0, help="请求间隔秒数 (默认2.0)")
     parser.add_argument("--format", nargs="+",
-                        choices=["markdown", "md", "word", "docx", "pdf", "json", "all"],
+                        choices=["markdown", "md", "word", "docx", "pdf", "json", "html", "all"],
                         default=["all"], help="导出格式")
     parser.add_argument("--from-date", help="导出起始日期 YYYY-MM-DD")
     parser.add_argument("--to-date", help="导出截止日期 YYYY-MM-DD")
@@ -363,7 +473,7 @@ def main():
     if args.login:
         do_login()
     else:
-        do_backup(full=args.full)
+        do_backup(full=args.full, pii=args.pii, rate_limit=args.rate_limit)
 
 
 if __name__ == "__main__":

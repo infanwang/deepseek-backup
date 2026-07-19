@@ -1,23 +1,59 @@
 ---
 name: deepseek-backup
-description: Automatic backup tool for DeepSeek chat history. Supports full/incremental backup, date filtering, keyword search, exports to Markdown, Word, PDF, JSON, HTML formats with ZIP archive. Use when user mentions "backup DeepSeek", "export DeepSeek chats", "save DeepSeek conversations", "DeepSeek chat history", or "备份DeepSeek聊天记录".
+description: Automatic backup tool for DeepSeek chat history. Supports full/incremental backup, PII desensitization, rate limiting, date filtering, keyword search, exports to Markdown, Word, PDF, JSON, HTML formats with ZIP archive. Use when user mentions "backup DeepSeek", "export DeepSeek chats", "save DeepSeek conversations", "DeepSeek chat history", or "备份DeepSeek聊天记录".
 license: MIT
 compatibility: Requires Python 3.10+, Selenium, Chromium browser
 metadata:
   author: cloudpeak
-  version: 1.2.0
+  version: 1.3.0
   category: productivity
-  tags: [deepseek, backup, chat-history, selenium, automation, export, viewer]
+  tags: [deepseek, backup, chat-history, selenium, automation, export, viewer, security]
 ---
 
 # DeepSeek Chat Backup
 
-Backup DeepSeek chat conversations with date filtering, keyword search, multi-format export (Markdown, Word, PDF, JSON, HTML Viewer), ZIP archive, and conversation statistics.
+Secure backup for DeepSeek chat conversations with PII desensitization, rate limiting, incremental dedup, date filtering, keyword search, multi-format export (Markdown, Word, PDF, JSON, HTML Viewer), ZIP archive, and conversation statistics.
 
 ## Prerequisites
 
 ```bash
 pip install selenium python-docx markdown pyyaml fpdf2
+```
+
+## Security Features
+
+### PII Desensitization
+
+Automatically masks sensitive information in exports:
+
+| Pattern | Example | Masked |
+|---------|---------|--------|
+| Phone | 13812345678 | 138****5678 |
+| Email | test@example.com | te***@example.com |
+| ID Card | 110101199001011234 | 110101199****1234 |
+| Bank Card | 6222021234567890 | 6222****9012 |
+| IP Address | 192.168.1.100 | 192.168.1.xxx |
+| API Keys | token=abc123 | token=***REDACTED*** |
+
+Enable with `--pii` flag or set `pii_desensitize: true` in config.
+
+### Rate Limiting
+
+Configurable request interval to avoid being blocked:
+
+```bash
+python scripts/backup.py --rate-limit 3.0  # 3 seconds between requests
+```
+
+Default: 2.0 seconds. Includes automatic retry with exponential backoff.
+
+### Incremental Dedup
+
+Compares content hash (not just title) to skip unchanged conversations:
+
+```bash
+# Only fetches conversations with new/changed content
+python scripts/backup.py
 ```
 
 ## Quick Start
@@ -154,11 +190,13 @@ Copy `config.example.yaml` to `config.yaml`:
 ```yaml
 backup_dir: ~/deepseek-backups
 deepseek_url: https://chat.deepseek.com
+pii_desensitize: false
+rate_limit_seconds: 2.0
 export_formats:
   - markdown
   - word
-  - pdf
   - json
+  - html
 ```
 
 ## CLI Reference
@@ -167,6 +205,8 @@ export_formats:
 backup.py:
   --full, -f          Full backup (re-scrape all)
   --login             Login and save session
+  --pii               Enable PII desensitization
+  --rate-limit        Request interval in seconds (default: 2.0)
   --format            Export formats: markdown word pdf json html all
   --from-date         Start date YYYY-MM-DD
   --to-date           End date YYYY-MM-DD
