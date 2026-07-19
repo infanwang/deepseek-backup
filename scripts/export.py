@@ -303,14 +303,21 @@ def export_html_viewer(chats: List[dict], output_dir: Path, config: dict):
     for i, chat in enumerate(chats):
         title = escape(chat.get("title", "Untitled"))
         messages_html = ""
-        for msg in chat.get("messages", []):
+        for j, msg in enumerate(chat.get("messages", [])):
             role = msg.get("role", "unknown")
             content = escape(msg.get("content", ""))
             role_class = "assistant" if role == "assistant" else "user"
             role_label = "🤖 Assistant" if role == "assistant" else "👤 User"
+            
+            # 长消息折叠：超过 200 字符的消息默认折叠
+            is_long = len(content) > 200
+            content_class = "content collapsed" if is_long else "content"
+            expand_btn = f'<button class="expand-btn" onclick="toggleMessage(this)">展开全文</button>' if is_long else ''
+            
             messages_html += f'''<div class="message {role_class}">
                 <div class="role">{role_label}</div>
-                <div class="content">{content}</div>
+                <div class="{content_class}">{content}</div>
+                {expand_btn}
             </div>\n'''
         chat_contents += f'<div class="chat-content" id="chat_{i}" style="display:none"><h2>{title}</h2>{messages_html}</div>\n'
 
@@ -338,6 +345,11 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; 
 .message.assistant {{ background: #2a1a3e; margin-left: auto; }}
 .role {{ font-size: 12px; color: #aaa; margin-bottom: 4px; }}
 .content {{ font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; }}
+.content.collapsed {{ max-height: 120px; overflow: hidden; position: relative; }}
+.content.collapsed::after {{ content: ""; position: absolute; bottom: 0; left: 0; right: 0; height: 40px; background: linear-gradient(transparent, #2a1a3e); pointer-events: none; }}
+.message.user .content.collapsed::after {{ background: linear-gradient(transparent, #1a3a5c); }}
+.expand-btn {{ display: inline-block; margin-top: 8px; padding: 4px 12px; font-size: 12px; color: #e94560; background: transparent; border: 1px solid #e94560; border-radius: 4px; cursor: pointer; transition: all 0.2s; }}
+.expand-btn:hover {{ background: #e94560; color: #fff; }}
 .search {{ padding: 12px; background: #16213e; }}
 .search input {{ width: 100%; padding: 8px 12px; border: 1px solid #0f3460; border-radius: 4px; background: #1a1a2e; color: #eee; }}
 </style>
@@ -370,6 +382,16 @@ function filterSidebar(query) {{
     items.forEach(item => {{
         item.style.display = item.textContent.toLowerCase().includes(query.toLowerCase()) ? 'block' : 'none';
     }});
+}}
+function toggleMessage(btn) {{
+    const content = btn.previousElementSibling;
+    if (content.classList.contains('collapsed')) {{
+        content.classList.remove('collapsed');
+        btn.textContent = '收起';
+    }} else {{
+        content.classList.add('collapsed');
+        btn.textContent = '展开全文';
+    }}
 }}
 </script>
 </body>
