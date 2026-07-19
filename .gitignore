@@ -1,0 +1,23 @@
+# Sensitive data
+cookies.json
+.browser_data/
+*.log
+
+# Backup data (user-specific)
+backups/
+json/
+exports/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
