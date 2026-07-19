@@ -1,0 +1,23 @@
+[
+  {
+    "description": "完成 DeepSeek 聊天记录的全量备份",
+    "criteria": [
+      "备份所有对话",
+      "PII 脱敏已启用",
+      "导出文件已生成"
+    ],
+    "status": "not_achieved",
+    "verification_count": 1
+  },
+  {
+    "description": "完成备份工具开发并通过测试",
+    "criteria": [
+      "backup.py 实现完成",
+      "export.py 实现完成",
+      "PII 脱敏测试通过",
+      "导出测试通过"
+    ],
+    "status": "pending",
+    "verification_count": 0
+  }
+]
