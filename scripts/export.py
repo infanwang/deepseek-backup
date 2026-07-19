@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-导出模块：将 DeepSeek 聊天记录导出为 Markdown、Word、PDF、JSON 格式。
-支持按日期范围筛选对话。
+导出模块：将 DeepSeek 聊天记录导出为 Markdown、Word、PDF、JSON、JSONL 格式。
+支持 YAML Front Matter 元数据、标签系统、全文搜索索引、逐会话 ZIP。
 """
 
 import json
 import os
 import re
+import sqlite3
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -419,6 +420,235 @@ def create_zip_archive(export_dir: Path, timestamp: str) -> Path:
     return zip_path
 
 
+# ========== JSONL 导出（训练数据格式）==========
+
+def export_jsonl(chats: List[dict], output_path: Path, config: dict):
+    """导出为 JSONL 格式（每行一个 JSON，适合 AI 训练）。"""
+    with open(output_path, "w", encoding="utf-8") as f:
+        for chat in chats:
+            title = chat.get("title", "")
+            chat_id = chat.get("chat_id", "")
+            scraped_at = chat.get("scraped_at", "")
+            messages = chat.get("messages", [])
+            
+            for msg in messages:
+                record = {
+                    "chat_id": chat_id,
+                    "chat_title": title,
+                    "timestamp": scraped_at,
+                    "role": msg.get("role", "unknown"),
+                    "content": msg.get("content", ""),
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    print(f"[✓] JSONL: {output_path}")
+
+
+# ========== YAML Front Matter Markdown 导出 ==========
+
+def export_markdown_with_frontmatter(chats: List[dict], output_path: Path, config: dict):
+    """导出带 YAML Front Matter 的 Markdown（借鉴 Claude Extractor）。"""
+    stats = get_chat_stats(chats)
+    lines = [
+        "---",
+        f"title: DeepSeek Chat Backup",
+        f"date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"conversations: {stats['total_chats']}",
+        f"messages: {stats['total_messages']}",
+        f"words: {stats['total_words']}",
+        f"tags: [deepseek, backup, chat-history]",
+        "---\n",
+        "# DeepSeek 聊天记录备份\n",
+    ]
+
+    for chat in chats:
+        title = chat.get("title", "未命名对话")
+        chat_id = chat.get("chat_id", "")
+        scraped_at = chat.get("scraped_at", "")
+        messages = chat.get("messages", [])
+        tags = chat.get("tags", [])
+
+        lines.append(f"\n## {title}\n")
+        lines.append(f"```yaml")
+        lines.append(f"id: {chat_id}")
+        if scraped_at:
+            lines.append(f"date: {scraped_at[:10]}")
+        lines.append(f"messages: {len(messages)}")
+        if tags:
+            lines.append(f"tags: [{', '.join(tags)}]")
+        lines.append(f"```\n")
+
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            role_label = "🤖 Assistant" if role == "assistant" else "👤 User" if role == "user" else f"❓ {role}"
+            lines.append(f"### {role_label}\n")
+            lines.append(f"{content}\n")
+            lines.append("---\n")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"[✓] Markdown (Front Matter): {output_path}")
+
+
+# ========== SQLite 全文搜索索引 ==========
+
+def build_search_index(chats: List[dict], db_path: Path):
+    """构建 SQLite FTS5 全文搜索索引（借鉴 Kept 项目）。"""
+    if db_path.exists():
+        db_path.unlink()
+    
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    
+    # 创建 FTS5 虚拟表
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts 
+        USING fts5(
+            chat_id, 
+            title, 
+            content, 
+            role,
+            tokenize='unicode61'
+        )
+    """)
+    
+    # 创建普通表存储元数据
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_meta (
+            chat_id TEXT PRIMARY KEY,
+            title TEXT,
+            scraped_at TEXT,
+            message_count INTEGER,
+            content_hash TEXT,
+            tags TEXT
+        )
+    """)
+    
+    # 插入数据
+    for chat in chats:
+        chat_id = chat.get("chat_id", "")
+        title = chat.get("title", "")
+        scraped_at = chat.get("scraped_at", "")
+        messages = chat.get("messages", [])
+        content_hash = chat.get("content_hash", "")
+        tags = chat.get("tags", [])
+        
+        # 插入元数据
+        cursor.execute("""
+            INSERT OR REPLACE INTO chat_meta 
+            (chat_id, title, scraped_at, message_count, content_hash, tags)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (chat_id, title, scraped_at, len(messages), content_hash, json.dumps(tags)))
+        
+        # 插入 FTS 索引
+        for msg in messages:
+            cursor.execute("""
+                INSERT INTO chat_fts (chat_id, title, content, role)
+                VALUES (?, ?, ?, ?)
+            """, (chat_id, title, msg.get("content", ""), msg.get("role", "unknown")))
+    
+    conn.commit()
+    conn.close()
+    print(f"[✓] Search Index: {db_path}")
+
+
+def search_chats(db_path: Path, query: str, limit: int = 20) -> List[dict]:
+    """全文搜索对话内容。"""
+    if not db_path.exists():
+        return []
+    
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT DISTINCT chat_id, title, 
+               snippet(chat_fts, 2, '<mark>', '</mark>', '...', 32) as snippet
+        FROM chat_fts 
+        WHERE chat_fts MATCH ? 
+        LIMIT ?
+    """, (query, limit))
+    
+    results = []
+    for row in cursor.fetchall():
+        results.append({
+            "chat_id": row[0],
+            "title": row[1],
+            "snippet": row[2],
+        })
+    
+    conn.close()
+    return results
+
+
+# ========== 逐会话 ZIP（借鉴 DeepSeek Exporter）==========
+
+def create_per_chat_zips(chats: List[dict], output_dir: Path):
+    """为每个对话创建独立的 ZIP 文件。"""
+    per_chat_dir = output_dir / "per_chat_zips"
+    per_chat_dir.mkdir(exist_ok=True)
+    
+    for chat in chats:
+        chat_id = chat.get("chat_id", "")
+        title = chat.get("title", "untitled")
+        safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:50]
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in chat_id)[:8]
+        
+        zip_path = per_chat_dir / f"{safe_title}_{safe_id}.zip"
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # 写入 JSON
+            zf.writestr("chat.json", json.dumps(chat, ensure_ascii=False, indent=2))
+            
+            # 写入 Markdown
+            md_content = f"# {title}\n\n"
+            for msg in chat.get("messages", []):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                role_label = "Assistant" if role == "assistant" else "User"
+                md_content += f"### {role_label}\n\n{content}\n\n---\n\n"
+            zf.writestr("chat.md", md_content)
+    
+    print(f"[✓] Per-chat ZIPs: {per_chat_dir} ({len(chats)} files)")
+
+
+# ========== 标签管理 ==========
+
+def load_tags(config: dict) -> dict:
+    """加载标签配置。"""
+    backup_dir = Path(os.path.expanduser(config["backup_dir"]))
+    tags_file = backup_dir / "tags.json"
+    if tags_file.exists():
+        with open(tags_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_tags(config: dict, tags: dict):
+    """保存标签配置。"""
+    backup_dir = Path(os.path.expanduser(config["backup_dir"]))
+    tags_file = backup_dir / "tags.json"
+    with open(tags_file, "w", encoding="utf-8") as f:
+        json.dump(tags, f, ensure_ascii=False, indent=2)
+
+
+def add_tag_to_chat(config: dict, chat_id: str, tag: str):
+    """为对话添加标签。"""
+    tags = load_tags(config)
+    if chat_id not in tags:
+        tags[chat_id] = []
+    if tag not in tags[chat_id]:
+        tags[chat_id].append(tag)
+    save_tags(config, tags)
+
+
+def filter_chats_by_tag(chats: List[dict], tag: str) -> List[dict]:
+    """按标签筛选对话。"""
+    if not tag:
+        return chats
+    # 从对话数据中筛选
+    return [c for c in chats if tag in c.get("tags", [])]
+
+
 # ========== 统一导出入口 ==========
 
 FORMAT_HANDLERS = {
@@ -428,7 +658,9 @@ FORMAT_HANDLERS = {
     "docx": export_word,
     "pdf": export_pdf,
     "json": export_json,
+    "jsonl": export_jsonl,
     "html": export_html_viewer,
+    "frontmatter": export_markdown_with_frontmatter,
 }
 
 FORMAT_EXTENSIONS = {
@@ -438,7 +670,9 @@ FORMAT_EXTENSIONS = {
     "docx": ".docx",
     "pdf": ".pdf",
     "json": ".json",
+    "jsonl": ".jsonl",
     "html": ".html",
+    "frontmatter": ".md",
 }
 
 
@@ -449,7 +683,10 @@ def export_all(
     to_date: str = None,
     keyword: str = None,
     chat_ids: List[str] = None,
+    tag: str = None,
     create_zip: bool = False,
+    per_chat_zip: bool = False,
+    build_index: bool = False,
 ):
     """统一导出入口。"""
     if config is None:
@@ -478,6 +715,10 @@ def export_all(
         chats = [c for c in chats if c.get("chat_id") in id_set]
         print(f"[i] ID 筛选后: {len(chats)} 个对话")
 
+    if tag:
+        chats = filter_chats_by_tag(chats, tag)
+        print(f"[i] 标签筛选后: {len(chats)} 个对话")
+
     if not chats:
         print("[✗] 筛选后无匹配对话")
         return
@@ -495,13 +736,22 @@ def export_all(
         handler = FORMAT_HANDLERS.get(fmt_lower)
         ext = FORMAT_EXTENSIONS.get(fmt_lower, ".bin")
         if handler:
-            if fmt_lower == "html":
+            if fmt_lower in ["html"]:
                 handler(chats, export_dir, config)
             else:
                 output_path = export_dir / f"deepseek_backup_{timestamp}{ext}"
                 handler(chats, output_path, config)
         else:
             print(f"[!] 不支持的格式: {fmt}")
+
+    # 构建搜索索引
+    if build_index:
+        db_path = export_dir / f"deepseek_search_{timestamp}.db"
+        build_search_index(chats, db_path)
+
+    # 逐会话 ZIP
+    if per_chat_zip:
+        create_per_chat_zips(chats, export_dir)
 
     # ZIP 归档
     if create_zip:
@@ -514,19 +764,37 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="DeepSeek 聊天记录导出工具")
     parser.add_argument("--format", "-f", nargs="+",
-                        choices=["markdown", "md", "word", "docx", "pdf", "json", "html", "all"],
+                        choices=["markdown", "md", "word", "docx", "pdf", "json", "jsonl", "html", "frontmatter", "all"],
                         default=["all"], help="导出格式 (可多选)")
     parser.add_argument("--from-date", help="起始日期 YYYY-MM-DD")
     parser.add_argument("--to-date", help="截止日期 YYYY-MM-DD")
     parser.add_argument("--keyword", "-k", help="按标题关键词筛选")
+    parser.add_argument("--tag", "-t", help="按标签筛选")
     parser.add_argument("--chat-id", nargs="+", help="指定对话 ID (可多选)")
     parser.add_argument("--list", "-l", action="store_true", help="列出所有对话")
     parser.add_argument("--stats", "-s", action="store_true", help="显示统计信息")
+    parser.add_argument("--search", help="全文搜索对话内容")
     parser.add_argument("--zip", "-z", action="store_true", help="打包为 ZIP")
+    parser.add_argument("--per-chat-zip", action="store_true", help="逐会话 ZIP")
+    parser.add_argument("--build-index", action="store_true", help="构建搜索索引")
     parser.add_argument("--config", "-c", help="配置文件路径")
     args = parser.parse_args()
 
     config = load_config(args.config)
+
+    # 全文搜索
+    if args.search:
+        backup_dir = Path(os.path.expanduser(config["backup_dir"]))
+        db_files = list(backup_dir.glob("exports/*.db"))
+        if not db_files:
+            print("[✗] 未找到搜索索引，请先运行: export.py --build-index")
+            return
+        db_path = max(db_files, key=os.path.getmtime)
+        results = search_chats(db_path, args.search)
+        print(f"\n搜索 '{args.search}' 结果 ({len(results)} 条):")
+        for r in results:
+            print(f"  [{r['title']}] {r['snippet'][:80]}...")
+        return
 
     # 列出对话
     if args.list:
@@ -538,6 +806,8 @@ def main():
             chats = filter_chats_by_date(chats, to_date=to_date)
         if keyword := args.keyword:
             chats = filter_chats_by_keyword(chats, keyword)
+        if tag := args.tag:
+            chats = filter_chats_by_tag(chats, tag)
 
         print(f"\n{'ID':<45} {'日期':<12} {'标题'}")
         print("-" * 100)
@@ -576,7 +846,7 @@ def main():
     formats = []
     for f in args.format:
         if f == "all":
-            formats = ["markdown", "word", "json", "html"]
+            formats = ["markdown", "word", "json", "jsonl", "html", "frontmatter"]
             break
         formats.append(f)
 
@@ -587,7 +857,10 @@ def main():
         to_date=args.to_date,
         keyword=args.keyword,
         chat_ids=args.chat_id,
+        tag=args.tag,
         create_zip=args.zip,
+        per_chat_zip=args.per_chat_zip,
+        build_index=args.build_index,
     )
 
 
